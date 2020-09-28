@@ -709,78 +709,56 @@ function createDispatchListener(
   };
 }
 
-function createDispatchEntry(
-  event: ReactSyntheticEvent,
-  listeners: Array<DispatchListener>,
-): DispatchEntry {
-  return {
-    event,
-    listeners,
-  };
-}
-
 export function accumulateSinglePhaseListeners(
   targetFiber: Fiber | null,
-  dispatchQueue: DispatchQueue,
-  event: ReactSyntheticEvent,
+  reactName: string | null,
+  nativeEventType: string,
   inCapturePhase: boolean,
   accumulateTargetOnly: boolean,
-): void {
-  const bubbled = event._reactName;
-  const captured = bubbled !== null ? bubbled + 'Capture' : null;
+): Array<DispatchListener> {
+  const captureName = reactName !== null ? reactName + 'Capture' : null;
+  const reactEventName = inCapturePhase ? captureName : reactName;
   const listeners: Array<DispatchListener> = [];
 
   let instance = targetFiber;
   let lastHostComponent = null;
-  const targetType = event.nativeEvent.type;
 
   // Accumulate all instances and listeners via the target -> root path.
   while (instance !== null) {
     const {stateNode, tag} = instance;
     // Handle listeners that are on HostComponents (i.e. <div>)
     if (tag === HostComponent && stateNode !== null) {
-      const currentTarget = stateNode;
-      lastHostComponent = currentTarget;
-      // For Event Handle listeners
-      if (enableCreateEventHandleAPI) {
-        const eventHandlerlisteners = getEventHandlerListeners(currentTarget);
+      lastHostComponent = stateNode;
 
-        if (eventHandlerlisteners !== null) {
-          const eventHandlerlistenersArr = Array.from(eventHandlerlisteners);
-          for (let i = 0; i < eventHandlerlistenersArr.length; i++) {
-            const {
-              callback,
-              capture: isCapturePhaseListener,
-              type,
-            } = eventHandlerlistenersArr[i];
-            if (type === targetType) {
-              if (isCapturePhaseListener && inCapturePhase) {
-                listeners.push(
-                  createDispatchListener(instance, callback, currentTarget),
-                );
-              } else if (!isCapturePhaseListener && !inCapturePhase) {
-                listeners.push(
-                  createDispatchListener(instance, callback, currentTarget),
-                );
-              }
+      // createEventHandle listeners
+      if (enableCreateEventHandleAPI) {
+        const eventHandlerListeners = getEventHandlerListeners(
+          lastHostComponent,
+        );
+        if (eventHandlerListeners !== null) {
+          eventHandlerListeners.forEach(entry => {
+            if (
+              entry.type === nativeEventType &&
+              entry.capture === inCapturePhase
+            ) {
+              listeners.push(
+                createDispatchListener(
+                  instance,
+                  entry.callback,
+                  (lastHostComponent: any),
+                ),
+              );
             }
-          }
+          });
         }
       }
-      // Standard React on* listeners, i.e. onClick prop
-      if (captured !== null && inCapturePhase) {
-        const captureListener = getListener(instance, captured);
-        if (captureListener != null) {
+
+      // Standard React on* listeners, i.e. onClick or onClickCapture
+      if (reactEventName !== null) {
+        const listener = getListener(instance, reactEventName);
+        if (listener != null) {
           listeners.push(
-            createDispatchListener(instance, captureListener, currentTarget),
-          );
-        }
-      }
-      if (bubbled !== null && !inCapturePhase) {
-        const bubbleListener = getListener(instance, bubbled);
-        if (bubbleListener != null) {
-          listeners.push(
-            createDispatchListener(instance, bubbleListener, currentTarget),
+            createDispatchListener(instance, listener, lastHostComponent),
           );
         }
       }
@@ -791,32 +769,26 @@ export function accumulateSinglePhaseListeners(
       lastHostComponent !== null &&
       stateNode !== null
     ) {
+      // Scopes
       const reactScopeInstance = stateNode;
-      const eventHandlerlisteners = getEventHandlerListeners(
+      const eventHandlerListeners = getEventHandlerListeners(
         reactScopeInstance,
       );
-      const lastCurrentTarget = ((lastHostComponent: any): Element);
-
-      if (eventHandlerlisteners !== null) {
-        const eventHandlerlistenersArr = Array.from(eventHandlerlisteners);
-        for (let i = 0; i < eventHandlerlistenersArr.length; i++) {
-          const {
-            callback,
-            capture: isCapturePhaseListener,
-            type,
-          } = eventHandlerlistenersArr[i];
-          if (type === targetType) {
-            if (isCapturePhaseListener && inCapturePhase) {
-              listeners.push(
-                createDispatchListener(instance, callback, lastCurrentTarget),
-              );
-            } else if (!isCapturePhaseListener && !inCapturePhase) {
-              listeners.push(
-                createDispatchListener(instance, callback, lastCurrentTarget),
-              );
-            }
+      if (eventHandlerListeners !== null) {
+        eventHandlerListeners.forEach(entry => {
+          if (
+            entry.type === nativeEventType &&
+            entry.capture === inCapturePhase
+          ) {
+            listeners.push(
+              createDispatchListener(
+                instance,
+                entry.callback,
+                (lastHostComponent: any),
+              ),
+            );
           }
-        }
+        });
       }
     }
     // If we are only accumulating events for the target, then we don't
@@ -827,9 +799,7 @@ export function accumulateSinglePhaseListeners(
     }
     instance = instance.return;
   }
-  if (listeners.length !== 0) {
-    dispatchQueue.push(createDispatchEntry(event, listeners));
-  }
+  return listeners;
 }
 
 // We should only use this function for:
@@ -841,11 +811,9 @@ export function accumulateSinglePhaseListeners(
 // phase event listeners (via emulation).
 export function accumulateTwoPhaseListeners(
   targetFiber: Fiber | null,
-  dispatchQueue: DispatchQueue,
-  event: ReactSyntheticEvent,
-): void {
-  const bubbled = event._reactName;
-  const captured = bubbled !== null ? bubbled + 'Capture' : null;
+  reactName: string,
+): Array<DispatchListener> {
+  const captureName = reactName + 'Capture';
   const listeners: Array<DispatchListener> = [];
   let instance = targetFiber;
 
@@ -855,29 +823,22 @@ export function accumulateTwoPhaseListeners(
     // Handle listeners that are on HostComponents (i.e. <div>)
     if (tag === HostComponent && stateNode !== null) {
       const currentTarget = stateNode;
-      // Standard React on* listeners, i.e. onClick prop
-      if (captured !== null) {
-        const captureListener = getListener(instance, captured);
-        if (captureListener != null) {
-          listeners.unshift(
-            createDispatchListener(instance, captureListener, currentTarget),
-          );
-        }
+      const captureListener = getListener(instance, captureName);
+      if (captureListener != null) {
+        listeners.unshift(
+          createDispatchListener(instance, captureListener, currentTarget),
+        );
       }
-      if (bubbled !== null) {
-        const bubbleListener = getListener(instance, bubbled);
-        if (bubbleListener != null) {
-          listeners.push(
-            createDispatchListener(instance, bubbleListener, currentTarget),
-          );
-        }
+      const bubbleListener = getListener(instance, reactName);
+      if (bubbleListener != null) {
+        listeners.push(
+          createDispatchListener(instance, bubbleListener, currentTarget),
+        );
       }
     }
     instance = instance.return;
   }
-  if (listeners.length !== 0) {
-    dispatchQueue.push(createDispatchEntry(event, listeners));
-  }
+  return listeners;
 }
 
 function getParent(inst: Fiber | null): Fiber | null {
@@ -978,7 +939,7 @@ function accumulateEnterLeaveListenersForEvent(
     instance = instance.return;
   }
   if (listeners.length !== 0) {
-    dispatchQueue.push(createDispatchEntry(event, listeners));
+    dispatchQueue.push({event, listeners});
   }
 }
 
@@ -1017,33 +978,23 @@ export function accumulateEnterLeaveTwoPhaseListeners(
 }
 
 export function accumulateEventHandleNonManagedNodeListeners(
-  dispatchQueue: DispatchQueue,
-  event: ReactSyntheticEvent,
+  reactEventType: DOMEventName,
   currentTarget: EventTarget,
   inCapturePhase: boolean,
-): void {
+): Array<DispatchListener> {
   const listeners: Array<DispatchListener> = [];
 
   const eventListeners = getEventHandlerListeners(currentTarget);
   if (eventListeners !== null) {
-    const listenersArr = Array.from(eventListeners);
-    const targetType = ((event.type: any): DOMEventName);
-
-    for (let i = 0; i < listenersArr.length; i++) {
-      const listener = listenersArr[i];
-      const {callback, capture: isCapturePhaseListener, type} = listener;
-      if (type === targetType) {
-        if (inCapturePhase && isCapturePhaseListener) {
-          listeners.push(createDispatchListener(null, callback, currentTarget));
-        } else if (!inCapturePhase && !isCapturePhaseListener) {
-          listeners.push(createDispatchListener(null, callback, currentTarget));
-        }
+    eventListeners.forEach(entry => {
+      if (entry.type === reactEventType && entry.capture === inCapturePhase) {
+        listeners.push(
+          createDispatchListener(null, entry.callback, currentTarget),
+        );
       }
-    }
+    });
   }
-  if (listeners.length !== 0) {
-    dispatchQueue.push(createDispatchEntry(event, listeners));
-  }
+  return listeners;
 }
 
 export function getListenerSetKey(
